@@ -21,9 +21,6 @@ use Magento\Catalog\Helper\Image as ImageHelper;
 use Magento\Eav\Api\AttributeSetRepositoryInterface;
 use Magento\Catalog\Model\Product\Attribute\Source\Status;
 use Magento\Framework\Locale\CurrencyInterface;
-use Magento\GroupedProduct\Model\Product\Link\CollectionProvider\Grouped as GroupedProducts;
-use Magento\Framework\App\ObjectManager;
-use Magento\Catalog\Api\Data\ProductLinkInterfaceFactory;
 
 /**
  * Data provider for Grouped products
@@ -103,16 +100,6 @@ class Grouped extends AbstractModifier
     private static $codeQty = 'qty';
 
     /**
-     * @var GroupedProducts
-     */
-    private $groupedProducts;
-
-    /**
-     * @var ProductLinkInterfaceFactory
-     */
-    private $productLinkFactory;
-
-    /**
      * @param LocatorInterface $locator
      * @param UrlInterface $urlBuilder
      * @param ProductLinkRepositoryInterface $productLinkRepository
@@ -122,9 +109,6 @@ class Grouped extends AbstractModifier
      * @param AttributeSetRepositoryInterface $attributeSetRepository
      * @param CurrencyInterface $localeCurrency
      * @param array $uiComponentsConfig
-     * @param GroupedProducts $groupedProducts
-     * @param \Magento\Catalog\Api\Data\ProductLinkInterfaceFactory|null $productLinkFactory
-     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
      */
     public function __construct(
         LocatorInterface $locator,
@@ -135,9 +119,7 @@ class Grouped extends AbstractModifier
         Status $status,
         AttributeSetRepositoryInterface $attributeSetRepository,
         CurrencyInterface $localeCurrency,
-        array $uiComponentsConfig = [],
-        GroupedProducts $groupedProducts = null,
-        \Magento\Catalog\Api\Data\ProductLinkInterfaceFactory $productLinkFactory = null
+        array $uiComponentsConfig = []
     ) {
         $this->locator = $locator;
         $this->urlBuilder = $urlBuilder;
@@ -148,15 +130,10 @@ class Grouped extends AbstractModifier
         $this->status = $status;
         $this->localeCurrency = $localeCurrency;
         $this->uiComponentsConfig = array_replace_recursive($this->uiComponentsConfig, $uiComponentsConfig);
-        $this->groupedProducts = $groupedProducts ?: ObjectManager::getInstance()->get(
-            \Magento\GroupedProduct\Model\Product\Link\CollectionProvider\Grouped::class
-        );
-        $this->productLinkFactory = $productLinkFactory ?: ObjectManager::getInstance()
-            ->get(\Magento\Catalog\Api\Data\ProductLinkInterfaceFactory::class);
     }
 
     /**
-     * @inheritdoc
+     * {@inheritdoc}
      */
     public function modifyData(array $data)
     {
@@ -166,15 +143,13 @@ class Grouped extends AbstractModifier
         if ($modelId) {
             $storeId = $this->locator->getStore()->getId();
             $data[$product->getId()]['links'][self::LINK_TYPE] = [];
-            $linkedItems = $this->groupedProducts->getLinkedProducts($product);
-            usort($linkedItems, function ($a, $b) {
-                return $a->getPosition() <=> $b->getPosition();
-            });
-            $productLink = $this->productLinkFactory->create();
-            foreach ($linkedItems as $index => $linkItem) {
+            foreach ($this->productLinkRepository->getList($product) as $linkItem) {
+                if ($linkItem->getLinkType() !== self::LINK_TYPE) {
+                    continue;
+                }
                 /** @var \Magento\Catalog\Api\Data\ProductInterface $linkedProduct */
-                $linkItem->setPosition($index);
-                $data[$modelId]['links'][self::LINK_TYPE][] = $this->fillData($linkItem, $productLink);
+                $linkedProduct = $this->productRepository->get($linkItem->getLinkedProductSku(), false, $storeId);
+                $data[$modelId]['links'][self::LINK_TYPE][] = $this->fillData($linkedProduct, $linkItem);
             }
             $data[$modelId][self::DATA_SOURCE_DEFAULT]['current_store_id'] = $storeId;
         }
@@ -187,7 +162,6 @@ class Grouped extends AbstractModifier
      * @param ProductInterface $linkedProduct
      * @param ProductLinkInterface $linkItem
      * @return array
-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
      */
     protected function fillData(ProductInterface $linkedProduct, ProductLinkInterface $linkItem)
     {
@@ -197,15 +171,11 @@ class Grouped extends AbstractModifier
         return [
             'id' => $linkedProduct->getId(),
             'name' => $linkedProduct->getName(),
-            'sku' => $linkedProduct->getSku(),
+            'sku' => $linkItem->getLinkedProductSku(),
             'price' => $currency->toCurrency(sprintf("%f", $linkedProduct->getPrice())),
-            'qty' => $linkedProduct->getQty(),
-            'position' => $linkedProduct->getPosition(),
-            'positionCalculated' => $linkedProduct->getPosition(),
-            'thumbnail' => $this->imageHelper
-                ->init($linkedProduct, 'product_listing_thumbnail')
-                ->setImageFile($linkedProduct->getImage())
-                ->getUrl(),
+            'qty' => $linkItem->getExtensionAttributes()->getQty(),
+            'position' => $linkItem->getPosition(),
+            'thumbnail' => $this->imageHelper->init($linkedProduct, 'product_listing_thumbnail')->getUrl(),
             'type_id' => $linkedProduct->getTypeId(),
             'status' => $this->status->getOptionText($linkedProduct->getStatus()),
             'attribute_set' => $this->attributeSetRepository
@@ -215,7 +185,7 @@ class Grouped extends AbstractModifier
     }
 
     /**
-     * @inheritdoc
+     * {@inheritdoc}
      */
     public function modifyMeta(array $meta)
     {
@@ -394,11 +364,9 @@ class Grouped extends AbstractModifier
                         'externalFilterMode' => true,
                         'imports' => [
                             'storeId' => '${ $.provider }:data.product.current_store_id',
-                            '__disableTmpl' => ['storeId' => false],
                         ],
                         'exports' => [
                             'storeId' => '${ $.externalProvider }:params.current_store_id',
-                            '__disableTmpl' => ['storeId' => false],
                         ],
                     ],
                 ],
@@ -440,8 +408,8 @@ class Grouped extends AbstractModifier
                                 'component' => 'Magento_Ui/js/form/components/button',
                                 'actions' => [
                                     [
-                                        'targetName' => $this->uiComponentsConfig['form'] .
-                                            '.' . $this->uiComponentsConfig['form']
+                                        'targetName' =>
+                                            $this->uiComponentsConfig['form'] . '.' . $this->uiComponentsConfig['form']
                                             . '.'
                                             . static::GROUP_GROUPED
                                             . '.'
@@ -449,8 +417,8 @@ class Grouped extends AbstractModifier
                                         'actionName' => 'openModal',
                                     ],
                                     [
-                                        'targetName' => $this->uiComponentsConfig['form'] .
-                                            '.' . $this->uiComponentsConfig['form']
+                                        'targetName' =>
+                                            $this->uiComponentsConfig['form'] . '.' . $this->uiComponentsConfig['form']
                                             . '.'
                                             . static::GROUP_GROUPED
                                             . '.'
@@ -486,7 +454,7 @@ class Grouped extends AbstractModifier
                         'label' => null,
                         'renderDefaultRecord' => false,
                         'template' => 'ui/dynamic-rows/templates/grid',
-                        'component' => 'Magento_GroupedProduct/js/grouped-product-grid',
+                        'component' => 'Magento_Ui/js/dynamic-rows/dynamic-rows-grid',
                         'addButton' => false,
                         'itemTemplate' => 'record',
                         'dataScope' => 'data.links',
@@ -501,10 +469,7 @@ class Grouped extends AbstractModifier
                             'attribute_set' => 'attribute_set_text',
                             'thumbnail' => 'thumbnail_src',
                         ],
-                        'links' => [
-                            'insertData' => '${ $.provider }:${ $.dataProvider }',
-                            '__disableTmpl' => ['insertData' => false],
-                        ],
+                        'links' => ['insertData' => '${ $.provider }:${ $.dataProvider }'],
                         'sortOrder' => 20,
                         'columnsHeader' => false,
                         'columnsHeaderAfterRender' => true,
@@ -590,22 +555,6 @@ class Grouped extends AbstractModifier
                     ],
                 ],
             ],
-            'positionCalculated' => [
-                'arguments' => [
-                    'data' => [
-                        'config' => [
-                            'label' => __('Position'),
-                            'dataType' => Form\Element\DataType\Number::NAME,
-                            'formElement' => Form\Element\Input::NAME,
-                            'componentType' => Form\Field::NAME,
-                            'elementTmpl' => 'Magento_GroupedProduct/components/position',
-                            'sortOrder' => 90,
-                            'fit' => true,
-                            'dataScope' => 'positionCalculated'
-                        ],
-                    ],
-                ],
-            ],
             'actionDelete' => [
                 'arguments' => [
                     'data' => [
@@ -614,7 +563,7 @@ class Grouped extends AbstractModifier
                             'componentType' => 'actionDelete',
                             'dataType' => Form\Element\DataType\Text::NAME,
                             'label' => __('Actions'),
-                            'sortOrder' => 100,
+                            'sortOrder' => 90,
                             'fit' => true,
                         ],
                     ],
@@ -628,7 +577,7 @@ class Grouped extends AbstractModifier
                             'formElement' => Form\Element\Input::NAME,
                             'componentType' => Form\Field::NAME,
                             'dataScope' => 'position',
-                            'sortOrder' => 110,
+                            'sortOrder' => 100,
                             'visible' => false,
                         ],
                     ],
